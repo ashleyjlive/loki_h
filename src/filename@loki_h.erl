@@ -27,5 +27,5 @@ basedir1(windows, site_data, Path) ->
     [_|_] = ProgramDta = os:getenv("PROGRAMDATA"),
     filename:join(
         [ProgramDta, ?AUTHOR_STR, "ERL", atom_to_list(node())|Path]);
-basedir1(Os, Type, Path) ->
-    filename:basedir(Type, Path, #{os => Os, author => ?AUTHOR_STR}).
+basedir1(unix, Type, Path) ->
+    filename:basedir(Type, Path, #{os => linux, author => ?AUTHOR_STR}).

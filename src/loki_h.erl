@@ -1,13 +1,27 @@
 -module(loki_h).
 
 %%% -- public control --
--export([start_link/3, stop/0]).
+-export([start_link/3,  
+         stop/1,
+         enter_link/2]).
 
 %%% -- public interface --
 -export([log/1]).
 
 %%% -- private preprocess --
--define(SUB_PATH, "/loki/api/v1/push").
+-include("../priv/status_codes.hrl").
+-include("common.hrl").
+-define(SUB_PATH, "loki/api/v1/push").
+-include("loki_h.types.hrl").
+
+-export_type([cfg_t/0,
+              cfg_fmtr_t/0,
+              cfg_fltrs_t/0,
+              cfg_sys_ops_t/0,
+              cfg_trgt_t/0,
+              cfg_args_t/0,
+              cfg_k_t/0,
+              auth_t/0]).
 
 -record(loki_target_r, {scheme :: http | https,
                         host :: unicode:chardata(),
@@ -16,7 +30,8 @@
                         url :: uri_string:uri_string(),
                         auth :: auth_t()}).
 
--record(loki_cfg_r, {max_bytes :: pos_integer(),
+-record(loki_cfg_r, {failure_strategy :: crash | drop,
+                     max_bytes :: pos_integer(),
                      max_count :: pos_integer(),
                      target :: #loki_target_r{},
                      format_mod :: module(),
@@ -29,12 +44,12 @@
                   {bearer, Tok :: unicode:chardata()} | undefined.
 
 %%% -- public control ----------------------------------------------------------
-%%% 
-start_link(Sched, Args, _SysOps) ->
-    {ok, proc_lib:spawn_link(fun() -> enter_link(Sched, Args) end)}.
 
-stop() ->
-    exit(?MODULE, kill).
+start_link(Scheduler, #{}=Args, _SysOps) when is_integer(Scheduler) ->
+    {ok, proc_lib:spawn_link(?MODULE, enter_link, [Scheduler, Args])}.
+
+stop(Scheduler) when is_integer(Scheduler) ->
+    proc_lib:stop(to_reg_name(Scheduler)).
 
 %%% -- public interface --------------------------------------------------------
 
@@ -42,57 +57,59 @@ log(Event) ->
     to_reg_name(erlang:system_info(scheduler_id)) ! {?MODULE, log, Event}.
 
 %%% -- internal ----------------------------------------------------------------
-%%% 
-enter_link(Sched, Args) ->
+
+-spec enter_link(pos_integer(), _) -> no_return().
+enter_link(Sched, #{formatter := Fmtr, config := #{}=Cfg}) ->
     register(to_reg_name(Sched), self()),
-    begin_proc(Args).
+    do_loop(to_record(Fmtr, Cfg)).
 
-begin_proc(#{formatter := Fmtr, config := #{}=Cfg}) ->
-    begin_loop(to_record(Fmtr, Cfg)).
-
-begin_loop(#loki_cfg_r{}=Cfg) ->
-    case loop(Cfg, 0, 0) of
+-spec do_loop(#loki_cfg_r{}) -> no_return().
+do_loop(#loki_cfg_r{}=Cfg) ->
+    case receive_loop(Cfg, 0, 0) of
         [] ->
-            begin_loop(Cfg);
+            do_loop(Cfg);
         Other ->
             Fmt = zlib:gzip(jsone:encode({[{streams, Other}]})),
-            begin_loop1(Fmt, Cfg)
+            process_fmtd(Fmt, Cfg)
     end.
 
-begin_loop1(Fmt, #loki_cfg_r{target = #loki_target_r{url = Url}=Trgt}=Cfg) ->
-    {ok, _Rsp} = 
-        httpc:request(
-            post, 
-            {Url, append_auth_header(Trgt, [{"content-encoding", "gzip"}]), 
-             "application/json", Fmt}, [], []),
-    %io:format("Posted ~p~n", [Rsp]),
-    begin_loop(Cfg).
+-spec process_fmtd(iodata(), #loki_cfg_r{}) -> no_return().
+process_fmtd(Fmt, #loki_cfg_r{target = #loki_target_r{}=Trgt}=Cfg) ->
+    case request(Trgt, Fmt) of
+        {ok, {{_, ?'204_No_Content', _}, _, _}} ->
+            do_loop(Cfg);
+        {ok, {{_, Code, _}, _, Err}} when 
+            ?is_status_code_bad(Code), 
+            Cfg#loki_cfg_r.failure_strategy =:= drop
+        ->
+            ?warning(
+                logging, "Failure to upload log data to Loki.", {Code, Err}),
+            do_loop(Cfg);
+        {error, Err} when Cfg#loki_cfg_r.failure_strategy =:= drop ->
+            ?warning(
+                logging, "Failed to upload log data to Loki.", Err),
+            do_loop(Cfg)
+    end.
 
-append_auth_header(#loki_target_r{auth = undefined}, Hdrs) ->
-    Hdrs;
-append_auth_header(#loki_target_r{auth = {basic, Usr, Pwd}}, Hdrs) ->
-    [{"authorization", "Basic " ++ base64:encode(Usr ++ [$:|Pwd])}|Hdrs];
-append_auth_header(#loki_target_r{auth = {bearer, Tok}}, Hdrs) ->
-    [{"authorization", "Bearer " ++ Tok}|Hdrs].
-
-loop(#loki_cfg_r{max_count = Max}, _Bytes, Count) when Count >= Max ->
+receive_loop(#loki_cfg_r{max_count = Max}, _Bytes, Count) when Count >= Max ->
     [];
-loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count) when Bytes >= Max ->
+receive_loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count) when Bytes >= Max ->
     [];
-loop(#loki_cfg_r{format_mod = FmtMod, 
-                 format_args = FmtArgs}=Cfg, Bytes, Count) 
+receive_loop(#loki_cfg_r{format_mod = FmtMod, 
+                         format_args = FmtArgs}=Cfg, Bytes, Count) 
     ->
     receive 
         {?MODULE, log, Log} ->
             #{level := Lvl, meta := #{time := MicroSeconds}}=Log,
             Msg = iolist_to_binary(FmtMod:format(Log, FmtArgs)),
             % TODO: ^ May not be needed
-            Size = byte_size(Msg),
             NanoSeconds = integer_to_binary(MicroSeconds * 1000),
-            [{[{stream, {[{timestamp, NanoSeconds},
-                         {level, Lvl},
-                         {job, Cfg#loki_cfg_r.job}]}},
-               {values, [[NanoSeconds, Msg]]}]}|loop(Cfg, Bytes + Size, Count + 1)];
+            [{[{stream, {[{instance, node()},
+                          {timestamp, NanoSeconds},
+                          {level, Lvl},
+                          {job, Cfg#loki_cfg_r.job}]}},
+               {values, [[NanoSeconds, Msg]]}]}
+                    |receive_loop(Cfg, Bytes + byte_size(Msg), Count + 1)];
         Other ->
             error(Other)
     after Cfg#loki_cfg_r.interval ->
@@ -101,6 +118,7 @@ loop(#loki_cfg_r{format_mod = FmtMod,
 
 to_record({M, A}, #{job := Job}=Cfg) ->
     #loki_cfg_r{
+        failure_strategy = map_get(failure_strategy, Cfg),
         interval = map_get(interval, Cfg),
         target = to_trgt_record(map_get(target, Cfg)),
         max_bytes = map_get(max_bytes, Cfg),
@@ -109,6 +127,10 @@ to_record({M, A}, #{job := Job}=Cfg) ->
         format_args = A,
         job = if is_list(Job) -> list_to_binary(Job); true -> Job end}.
 
+to_trgt_record([_|_]=Url) ->
+    to_trgt_record(#{url => Url});
+to_trgt_record(<<_, _/binary>>=Url) ->
+    to_trgt_record(#{url => Url});
 to_trgt_record(#{url := Url}=Cfg) when is_list(Url); is_binary(Url) ->
     #{} = Prsd = uri_string:parse(Url),
     RawCfg = 
@@ -124,24 +146,56 @@ to_trgt_record(#{scheme := <<"http">>}=Cfg) ->
     to_trgt_record(Cfg#{scheme := http});
 to_trgt_record(#{scheme := <<"https">>}=Cfg) ->
     to_trgt_record(Cfg#{scheme := https});
+to_trgt_record(#{scheme := https, port := undefined}=Cfg) ->
+    to_trgt_record(Cfg#{port => 443});
+to_trgt_record(#{scheme := http, port := undefined}=Cfg) ->
+    to_trgt_record(Cfg#{port => 80});
 to_trgt_record(#{}=Cfg) ->
-    Trgt = 
-        #loki_target_r{scheme = map_get(scheme, Cfg),
-                       host = map_get(host, Cfg),
-                       port = map_get(port, Cfg),
-                       path = maps:get(path, Cfg, ""),
-                       auth = maps:get(auth, Cfg, undefined)},
-    Trgt#loki_target_r{url = recompose(Cfg)}.
+    #loki_target_r{url = recompose(Cfg),
+                   scheme = map_get(scheme, Cfg),
+                   host = map_get(host, Cfg),
+                   port = map_get(port, Cfg),
+                   path = maps:get(path, Cfg, ""),
+                   auth = maps:get(auth, Cfg, undefined)}.
 
-recompose(#{scheme := Scheme}=Cfg) when is_atom(Scheme) ->
-    recompose(Cfg#{scheme := atom_to_list(Scheme)});
+-spec recompose(cfg_trgt_t()) -> uri_string:uri_string().
+%%%
+%%  @doc Converts the raw Loki configuration target to a URI string.
+%%
 recompose(#{}=Cfg) ->
-    uri_string:recompose(
-        #{scheme => map_get(scheme, Cfg),
-          host => map_get(host, Cfg),
-          port => map_get(port, Cfg),
-          path => [maps:get(path, Cfg, ""), ?SUB_PATH]}).
+    case uri_string:recompose(
+            #{scheme => atom_to_list(map_get(scheme, Cfg)),
+              host => map_get(host, Cfg),
+              port => map_get(port, Cfg),
+              path => filename:join(maps:get(path, Cfg, ""), ?SUB_PATH)})
+    of
+        [_|_]=V ->
+            V;
+        <<_, _/binary>>=V ->
+            V
+        % NB: Don't allow error response.
+    end.
 
+request(#loki_target_r{url = Url}=Trgt, Bdy) ->
+    httpc:request(
+        post, {Url, append_auth_header(Trgt, [{"content-encoding", "gzip"}]), 
+        "application/json", Bdy}, [], []).
+
+-spec append_auth_header(#loki_target_r{}, httpc:headers()) -> httpc:headers().
+%%%
+%%  @doc Appends any authorization headers if configured.
+%%
+append_auth_header(#loki_target_r{auth = undefined}, Hdrs) ->
+    Hdrs;
+append_auth_header(#loki_target_r{auth = {basic, Usr, Pwd}}, Hdrs) ->
+    [{"authorization", "Basic " ++ base64:encode(Usr ++ [$:|Pwd])}|Hdrs];
+append_auth_header(#loki_target_r{auth = {bearer, Tok}}, Hdrs) ->
+    [{"authorization", "Bearer " ++ Tok}|Hdrs].
+
+-spec to_reg_name(pos_integer()) -> atom().
+%%%
+%%  @doc Returns the log receiver for the associated scheduler.
+%%
 to_reg_name(1) ->
     'recv@loki_h_1';
 to_reg_name(2) ->

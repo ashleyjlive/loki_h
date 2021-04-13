@@ -5,7 +5,8 @@
   {mod, {app@loki_h, []}},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+    debug
    ]},
   {env,[]},
   {modules, []},

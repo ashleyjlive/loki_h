@@ -13,8 +13,7 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, undefined).
 
 init(undefined) ->
-    [SysOps,Config,Fmtr] = app@loki_h:start_args([sys_ops,config,formatter]),
-    LokiH = #{config => Config, formatter => Fmtr},
+    LokiH = #{sys_ops := SysOps} = app@loki_h:start_args(),
     SupSpec = 
         #{strategy => one_for_one,
           intensity => 10,
