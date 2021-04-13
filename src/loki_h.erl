@@ -82,16 +82,19 @@ loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count) when Bytes >= Max ->
 loop(#loki_cfg_r{format_mod = FmtMod, 
                  format_args = FmtArgs}=Cfg, Bytes, Count) 
     ->
-    receive {?MODULE, log, Log} ->
-        #{level := Lvl, meta := #{time := MicroSeconds}}=Log,
-        Msg = iolist_to_binary(FmtMod:format(Log, FmtArgs)),
-        % TODO: ^ May not be needed
-        Size = byte_size(Msg),
-        NanoSeconds = integer_to_binary(MicroSeconds * 1000),
-        [{[{stream, {[{timestamp, NanoSeconds},
-                      {level, Lvl},
-                      {job, Cfg#loki_cfg_r.job}]}},
-           {values, [[NanoSeconds, Msg]]}]}|loop(Cfg, Bytes + Size, Count + 1)]
+    receive 
+        {?MODULE, log, Log} ->
+            #{level := Lvl, meta := #{time := MicroSeconds}}=Log,
+            Msg = iolist_to_binary(FmtMod:format(Log, FmtArgs)),
+            % TODO: ^ May not be needed
+            Size = byte_size(Msg),
+            NanoSeconds = integer_to_binary(MicroSeconds * 1000),
+            [{[{stream, {[{timestamp, NanoSeconds},
+                         {level, Lvl},
+                         {job, Cfg#loki_cfg_r.job}]}},
+               {values, [[NanoSeconds, Msg]]}]}|loop(Cfg, Bytes + Size, Count + 1)];
+        Other ->
+            error(Other)
     after Cfg#loki_cfg_r.interval ->
         []
     end.
