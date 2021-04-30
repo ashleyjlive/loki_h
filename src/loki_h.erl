@@ -65,7 +65,7 @@ enter_link(Sched, #{formatter := Fmtr, config := #{}=Cfg}) ->
 
 -spec do_loop(#loki_cfg_r{}) -> no_return().
 do_loop(#loki_cfg_r{}=Cfg) ->
-    case receive_loop(Cfg, 0, 0) of
+    case receive_loop(Cfg, 0, 0, []) of
         [] ->
             do_loop(Cfg);
         Other ->
@@ -91,12 +91,14 @@ process_fmtd(Fmt, #loki_cfg_r{target = #loki_target_r{}=Trgt}=Cfg) ->
             do_loop(Cfg)
     end.
 
-receive_loop(#loki_cfg_r{max_count = Max}, _Bytes, Count) when Count >= Max ->
-    [];
-receive_loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count) when Bytes >= Max ->
-    [];
+receive_loop(#loki_cfg_r{max_count = Max}, _Bytes, Count, Acc) when Count >= Max 
+    ->
+    lists:reverse(Acc);
+receive_loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count, Acc) when Bytes >= Max 
+    ->
+    lists:reverse(Acc);
 receive_loop(#loki_cfg_r{format_mod = FmtMod, 
-                         format_args = FmtArgs}=Cfg, Bytes, Count) 
+                         format_args = FmtArgs}=Cfg, Bytes, Count, Acc) 
     ->
     receive 
         {?MODULE, log, Log} ->
@@ -104,16 +106,17 @@ receive_loop(#loki_cfg_r{format_mod = FmtMod,
             Msg = iolist_to_binary(FmtMod:format(Log, FmtArgs)),
             % TODO: ^ May not be needed
             NanoSeconds = integer_to_binary(MicroSeconds * 1000),
-            [{[{stream, {[{instance, node()},
-                          {timestamp, NanoSeconds},
-                          {level, Lvl},
-                          {job, Cfg#loki_cfg_r.job}]}},
-               {values, [[NanoSeconds, Msg]]}]}
-                    |receive_loop(Cfg, Bytes + byte_size(Msg), Count + 1)];
+            Acc1 =
+                [{[{stream, {[{instance, node()},
+                              {timestamp, NanoSeconds},
+                              {level, Lvl},
+                              {job, Cfg#loki_cfg_r.job}]}},
+                   {values, [[NanoSeconds, Msg]]}]}|Acc],
+            receive_loop(Cfg, Bytes + byte_size(Msg), Count + 1, Acc1);
         Other ->
             error(Other)
     after Cfg#loki_cfg_r.interval ->
-        []
+        lists:reverse(Acc)
     end.
 
 to_record({M, A}, #{job := Job}=Cfg) ->
