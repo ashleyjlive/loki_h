@@ -11,7 +11,7 @@
 -type cfg_args_t() :: 
         #{job := nonempty_string() | binary(),
           target := cfg_trgt_t(),
-          failure_strategy := ignore | drop,
+          failure_strategy := crash | drop,
           interval := non_neg_integer(),
           max_count := non_neg_integer(),
           max_bytes := non_neg_integer()}.

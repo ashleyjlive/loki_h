@@ -73,9 +73,12 @@ Where `Conf` is defined as the following type specification.
           %     be reused.
           target := loki_h:cfg_trgt_t(),
           % Where to send the logs to.
-          failure_strategy => ignore | drop, 
-          % If the endpoint is offline either tear down supervision tree (crash) 
-          % or drop logs.
+          failure_strategy => crash | drop | 
+                              {retry, {timeout, Interval :: pos_integer()} | 
+                                      Count :: pos_integer()}, 
+          % If the endpoint is offline either:
+          % • Tear down supervision tree (crash) 
+          % • Drop the logs
           interval => non_neg_integer(),
           % Time in milliseconds before sending the current collected logs. 
           max_count => non_neg_integer(),

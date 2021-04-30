@@ -53,7 +53,7 @@ start_arg(K) ->
 %%
 start_arg(config, #{}=Args0) ->
     DfltCfg = 
-        #{failure_strategy => ignore,
+        #{failure_strategy => crash,
           max_bytes => 1000000,
           max_count => 1000,
           interval => 5000},
