@@ -78,14 +78,13 @@ process_fmtd(Fmt, #loki_cfg_r{target = #loki_target_r{}=Trgt}=Cfg) ->
     case request(Trgt, Fmt) of
         {ok, {{_, ?'204_No_Content', _}, _, _}} ->
             do_loop(Cfg);
-        {ok, {{_, Code, _}, _, Err}} when 
-            ?is_status_code_bad(Code), 
-            Cfg#loki_cfg_r.failure_strategy =:= drop
+        {ok, {{_, C, _}, _, Err}} when 
+            ?is_status_code_bad(C), Cfg#loki_cfg_r.failure_strategy =:= drop
         ->
             logger:warning(
                 [{tag, logging},
                  {desc, "Failure to upload log data to Loki."},
-                 {data, {Code, Err}}]),
+                 {data, {C, Err}}]),
             do_loop(Cfg);
         {error, Err} when Cfg#loki_cfg_r.failure_strategy =:= drop ->
             logger:warning(
@@ -95,14 +94,12 @@ process_fmtd(Fmt, #loki_cfg_r{target = #loki_target_r{}=Trgt}=Cfg) ->
             do_loop(Cfg)
     end.
 
-receive_loop(#loki_cfg_r{max_count = Max}, _Bytes, Count, Acc) when Count >= Max 
-    ->
+receive_loop(#loki_cfg_r{max_count = Max}, _B, C, Acc) when C >= Max ->
     lists:reverse(Acc);
-receive_loop(#loki_cfg_r{max_bytes = Max}, Bytes, _Count, Acc) when Bytes >= Max 
-    ->
+receive_loop(#loki_cfg_r{max_bytes = Max}, B, _C, Acc) when B >= Max ->
     lists:reverse(Acc);
 receive_loop(#loki_cfg_r{format_mod = FmtMod, 
-                         format_args = FmtArgs}=Cfg, Bytes, Count, Acc) 
+                         format_args = FmtArgs}=Cfg, B, C, Acc) 
     ->
     receive 
         {?MODULE, log, Log} ->
@@ -116,7 +113,7 @@ receive_loop(#loki_cfg_r{format_mod = FmtMod,
                               {level, Lvl},
                               {job, Cfg#loki_cfg_r.job}]}},
                    {values, [[NanoSeconds, Msg]]}]}|Acc],
-            receive_loop(Cfg, Bytes + byte_size(Msg), Count + 1, Acc1);
+            receive_loop(Cfg, B + byte_size(Msg), C + 1, Acc1);
         Other ->
             error(Other)
     after Cfg#loki_cfg_r.interval ->
