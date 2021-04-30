@@ -82,12 +82,16 @@ process_fmtd(Fmt, #loki_cfg_r{target = #loki_target_r{}=Trgt}=Cfg) ->
             ?is_status_code_bad(Code), 
             Cfg#loki_cfg_r.failure_strategy =:= drop
         ->
-            ?warning(
-                logging, "Failure to upload log data to Loki.", {Code, Err}),
+            logger:warning(
+                [{tag, logging},
+                 {desc, "Failure to upload log data to Loki."},
+                 {data, {Code, Err}}]),
             do_loop(Cfg);
         {error, Err} when Cfg#loki_cfg_r.failure_strategy =:= drop ->
-            ?warning(
-                logging, "Failed to upload log data to Loki.", Err),
+            logger:warning(
+                [{tag, logging},
+                 {desc, "Failure to upload log data to Loki."},
+                 {data, Err}]),
             do_loop(Cfg)
     end.
 

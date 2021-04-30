@@ -1,8 +1,4 @@
-[{<<"debug">>,
-  {git,"https://github.com/ashleyjlive/debug.git",
-       {ref,"535860cd2b48ea8c5fc4e16c84e2662f367a2b97"}},
-  0},
- {<<"jsone">>,
+[{<<"jsone">>,
   {git,"https://github.com/sile/jsone.git",
        {ref,"971a1d9aff364ebd402987da36f6a00d209c20af"}},
   0}].
