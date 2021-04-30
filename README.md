@@ -17,14 +17,21 @@ include it in your *.app.src file as a required application.
 
 ## Test
 
-An example configuration is defined in `config/sys.config` and can be enabled by 
-uncommenting the `config` tuple in rebar.config (under shell).
+An example configuration is defined in `config/sys.config` and is used when 
+launching loki_h via `rebar3 shell`.
 
 Then, it is a matter of simply calling...
 
 -----
 
     $ rebar3 shell
+
+Setting the primary logger configuration to `debug`...
+```erlang
+  ok = logger:set_primary_config(level, debug). % Note that this will vary 
+                                                % depending on your production 
+                                                % environment.
+```
 
 And writing some logs via Erlangs `logger` module...
 
